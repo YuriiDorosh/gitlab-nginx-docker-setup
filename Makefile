@@ -7,8 +7,7 @@ KEEP_DAYS     ?= 7
 
 .PHONY: up up-build down restart logs shell console \
         backup backup-now list-backups backup-clean \
-        restore restore-latest health
-
+        restore restore-latest health set-pass
 up:
 	$(DC) --env-file .env up -d
 
@@ -85,3 +84,15 @@ restore-latest:  ## Restore new backup from(take latest) $(BACKUP_DIR)
 	if [ -z "$$TAR" ]; then echo "No backups found"; exit 1; fi; \
 	make restore FILE="$$TAR"
 
+set-pass:
+	@if [ -z "$(USER)" ] || [ -z "$(PASS)" ]; then \
+		echo "Use: make set-pass USER=<username> PASS=<password>"; exit 1; fi
+	@echo "▸ Setting password for '$(USER)'…"
+	$(DC) exec -e NEW_PASS="$(PASS)" -T gitlab \
+	  gitlab-rails runner "\
+u = User.find_by_username('$(USER)'); \
+abort('User not found') unless u; \
+u.password              = ENV['NEW_PASS']; \
+u.password_confirmation = ENV['NEW_PASS']; \
+u.save!; \
+puts '✓  Password updated';"

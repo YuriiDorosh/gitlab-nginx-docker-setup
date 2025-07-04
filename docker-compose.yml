@@ -38,6 +38,9 @@ services:
         # IP-allowlist (optional)
         gitlab_rails['ip_whitelist'] = [ "${ALLOWED_IPS}" ]
 
+        # Disable registration
+        gitlab_rails['gitlab_signup_enabled'] = false
+
     volumes:
       - gitlab-data:/var/opt/gitlab
       - gitlab-config:/etc/gitlab
