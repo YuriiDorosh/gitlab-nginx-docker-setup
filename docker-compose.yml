@@ -2,25 +2,28 @@ version: "3.8"
 
 services:
   gitlab:
-    image: gitlab/gitlab-ce:17.0.1-ce.0
+    image: gitlab/gitlab-ce:18.1.1-ce.0
     container_name: gitlab
     hostname: ${GITLAB_HOST}
     restart: unless-stopped
     shm_size: "256m"
-
+    ports:
+      - "2222:22"
     environment:
       TZ: ${TZ}
       GITLAB_ROOT_PASSWORD: ${GITLAB_ROOT_PASSWORD}
       GITLAB_ROOT_EMAIL: ${GITLAB_ROOT_EMAIL}
 
-      # ► Omnibus gitlab.rb
       GITLAB_OMNIBUS_CONFIG: |
         external_url "http://${GITLAB_HOST}"
         # Віддаємо HTTP усередині кластера, TLS немає
         nginx['listen_port'] = 80
         nginx['listen_https'] = false
 
-        # SMTP (беремо з env)
+        ### SSH-Git
+        gitlab_rails['gitlab_shell_ssh_port'] = 2222
+
+        # SMTP (from env)
         gitlab_rails['gitlab_email_enabled'] = ${SMTP_ENABLED}
         gitlab_rails['smtp_enable']         = ${SMTP_ENABLED}
         gitlab_rails['smtp_address']        = "${SMTP_ADDRESS}"
@@ -32,15 +35,11 @@ services:
         gitlab_rails['smtp_enable_starttls_auto'] = true
         gitlab_rails['gitlab_email_from']   = "${SMTP_USER}"
 
-        # IP-allowlist (опційно)
+        # IP-allowlist (optional)
         gitlab_rails['ip_whitelist'] = [ "${ALLOWED_IPS}" ]
 
-    # volumes:
-    #   - ./gitlab/config:/etc/gitlab
-    #   - ./gitlab/data:/var/opt/gitlab
-    #   - ./gitlab/logs:/var/log/gitlab
     volumes:
-      - gitlab-data:/var/opt/gitlab           # ← named volume,  а не ./gitlab/data
+      - gitlab-data:/var/opt/gitlab
       - gitlab-config:/etc/gitlab
       - gitlab-logs:/var/log/gitlab
 
@@ -52,18 +51,15 @@ services:
     container_name: gitlab-proxy
     depends_on: [gitlab]
     restart: unless-stopped
-
     volumes:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
-
     ports:
-      - "80:80"          # тільки HTTP
-
+      - "80:80"
     networks:
       - backend
       - frontend
 
-  gitlab-backup:                 # ← sidecar для щоденного бекапу
+  gitlab-backup:
       image: busybox:1.36
       container_name: gitlab-backup
       depends_on: [gitlab]
@@ -72,33 +68,35 @@ services:
         /bin/sh -c '
           echo "[backup] sidecar started";
           while true; do
-            TS=$(date +%F_%H-%M);
-            echo "[backup] $TS  running gitlab-backup create...";
+            TS=$$(date +%F_%H-%M);
+            echo "[backup] $$TS  running gitlab-backup create...";
             docker exec gitlab gitlab-backup create STRATEGY=copy;
 
-            LATEST=$(docker exec -t gitlab \
+            LATEST=$$(docker exec -t gitlab \
                       ls -1t /var/opt/gitlab/backups | head -n1 | tr -d "\r");
-            mkdir -p /export/$TS;
-            docker cp gitlab:/var/opt/gitlab/backups/$LATEST   /export/$TS/
-            docker cp gitlab:/etc/gitlab/gitlab-secrets.json   /export/$TS/
-            docker cp gitlab:/etc/gitlab/gitlab.rb             /export/$TS/
+            mkdir -p /export/$$TS;
+            docker cp gitlab:/var/opt/gitlab/backups/$$LATEST /export/$$TS/
+            docker cp gitlab:/etc/gitlab/gitlab-secrets.json   /export/$$TS/
+            docker cp gitlab:/etc/gitlab/gitlab.rb             /export/$$TS/
 
-            # тримаємо лише 7 днів
+            # Clean up old backups
+            echo "[backup] cleaning up backups older than 7 days";
+            # Remove directories older than 7 days
             find /export -maxdepth 1 -type d -mtime +7 -exec rm -rf {} +
             echo "[backup] done — sleep 24h"; sleep 86400;
           done'
       volumes:
-        - ./backups:/export               # ← папка з архівами на хості
+        - ./backups:/export
         - /var/run/docker.sock:/var/run/docker.sock:ro
       networks:
-        - backend                         # бачить gitlab по імені
+        - backend
 
 
 networks:
   backend:
   frontend:
 
-volumes:          # <-- додайте нижче
+volumes:
   gitlab-data:
   gitlab-config:
   gitlab-logs:
