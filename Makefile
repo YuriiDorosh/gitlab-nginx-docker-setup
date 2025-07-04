@@ -1,59 +1,87 @@
-DC ?= docker compose
-BACKUP_DIR ?= ./backups
+# ───────────── Settings ──────────────────
+DC            ?= docker compose
+CT            ?= gitlab                   # container name
+BACKUP_DIR    ?= ./backups
+KEEP_DAYS     ?= 7 
+# ─────────────────────────────────────────
 
-.PHONY: up down restart logs exec console \
-        backup backup-now backup-clean restore restart-backup
+.PHONY: up up-build down restart logs shell console \
+        backup backup-now list-backups backup-clean \
+        restore restore-latest health
 
-up:            ## Запустити всі сервіси
+up:
 	$(DC) --env-file .env up -d
 
-down:          ## Зупинити й прибрати
+up-build:
+	@echo "▸ Building images…"
+	$(DC) --env-file .env up -d --build
+
+down
 	$(DC) down
 
-restart:       ## Перезапустити контейнери
+restart:
 	$(DC) restart
 
-logs:          ## Стрим логи
-	$(DC) logs -f
+logs:
+	$(DC) logs -f $(CT)
 
-exec:          ## Shell у GitLab (make exec CMD="ls -la")
-	@if [ -z "$(CMD)" ]; then echo "Use: make exec CMD='<command>'"; exit 1; fi
-	$(DC) exec gitlab /bin/bash -c "$(CMD)"
+shell:
+	@if [ -z "$(CMD)" ]; then echo 'Use: make shell CMD="<command>"'; exit 1; fi
+	$(DC) exec $(CT) /bin/bash -c '$(CMD)'
 
-console:       ## Rails console (GitLab API)
-	$(DC) exec gitlab gitlab-rails console
+console:
+	$(DC) exec $(CT) gitlab-rails console
 
-# ──────────────────────────── Бекапи ─────────────────────────────
+health:
+	$(DC) exec $(CT) gitlab-rake gitlab:doctor:secrets && \
+	$(DC) exec $(CT) gitlab-rake gitlab:db:validate_config
 
-backup:        ## Створити .tar-бекап тільки у volume (швидко)
-	$(DC) exec gitlab gitlab-backup create STRATEGY=copy
 
-backup-now:    ## Повний бекап у $(BACKUP_DIR)/YYYY-MM-DD_HH-MM
-	@sh -c '\
-	set -e; \
+backup:
+	$(DC) exec $(CT) gitlab-backup create STRATEGY=copy
+
+backup-now:      ## Full backup → $(BACKUP_DIR)/YYYY-MM-DD_HH-MM
+	@set -eu; \
 	TS=$$(date +%F_%H-%M); \
-	DEST="$(BACKUP_DIR)/$$TS"; \
+	DST="$(BACKUP_DIR)/$$TS"; \
 	echo "▸ Creating backup → $$TS"; \
-	mkdir -p "$$DEST"; \
-	$(DC) exec -T gitlab gitlab-backup create STRATEGY=copy; \
-	LATEST=$$($(DC) exec -T gitlab \
-	          ls -1t /var/opt/gitlab/backups | head -n1 | tr -d "\r"); \
+	mkdir -p "$$DST"; \
+	$(DC) exec -T $(CT) gitlab-backup create STRATEGY=copy; \
+	LATEST=$$($(DC) exec -T $(CT) \
+	          ls -1t /var/opt/gitlab/backups | head -n1 | tr -d '\r'); \
 	echo "▸ Copying files to host…"; \
-	$(DC) cp gitlab:/var/opt/gitlab/backups/$$LATEST   "$$DEST/"; \
-	$(DC) cp gitlab:/etc/gitlab/gitlab-secrets.json    "$$DEST/"; \
-	$(DC) cp gitlab:/etc/gitlab/gitlab.rb              "$$DEST/"; \
-	echo "✔ Backup saved to $$DEST"'
+	$(DC) cp $(CT):/var/opt/gitlab/backups/$$LATEST "$$DST/"; \
+	$(DC) cp $(CT):/etc/gitlab/gitlab-secrets.json "$$DST/"; \
+	$(DC) cp $(CT):/etc/gitlab/gitlab.rb           "$$DST/"; \
+	echo "✔ Backup saved → $$DST"
 
-backup-clean:  ## Видалити каталоги у $(BACKUP_DIR) старші 7 днів
-	find $(BACKUP_DIR) -maxdepth 1 -type d -mtime +7 -print -exec rm -rf {} +
+list-backups:    ## Show local backups in $(BACKUP_DIR)
+	@ls -1t $(BACKUP_DIR) || echo "no backups"
 
-restart-backup: ## Перезапустити sidecar-контейнер для бекапу
-	$(DC) restart gitlab-backup
+backup-clean:
+	@find $(BACKUP_DIR) -maxdepth 1 -type d -mtime +$(KEEP_DAYS) -print -exec rm -rf {} +
 
-# ──────────────────────────── Відновлення ───────────────────────
 
-restore:       ## Відновити бекап (FILE=..._gitlab_backup.tar)
+restore:         ## Restore (FILE=..._gitlab_backup.tar)
 	@if [ -z "$(FILE)" ]; then \
-		echo "Use: make restore FILE=<backup.tar>"; exit 1; fi
-	$(DC) exec gitlab gitlab-backup restore BACKUP=$(basename $(FILE) .tar)
-	$(DC) exec gitlab gitlab-ctl reconfigure
+	  echo "Use: make restore FILE=<path/to/_gitlab_backup.tar>"; exit 1; fi
+	@set -eu; \
+	BASENAME=$$(basename $(FILE)); \
+	echo "▸ Copying $$BASENAME to container…"; \
+	$(DC) cp $(FILE) $(CT):/var/opt/gitlab/backups/; \
+	echo "▸ Restoring…"; \
+	$(DC) exec -T $(CT) gitlab-backup restore BACKUP=$${BASENAME%%.tar}; \
+	echo "▸ Restoring configs…"; \
+	DIR=$$(dirname $(FILE)); \
+	$(DC) cp $$DIR/gitlab-secrets.json $(CT):/etc/gitlab/; \
+	$(DC) cp $$DIR/gitlab.rb           $(CT):/etc/gitlab/ || true; \
+	$(DC) exec $(CT) gitlab-ctl reconfigure; \
+	$(DC) exec $(CT) gitlab-ctl restart
+
+restore-latest:  ## Restore new backup from(take latest) $(BACKUP_DIR)
+	@set -eu; \
+	LAST_DIR=$$(ls -1t $(BACKUP_DIR) | head -n1); \
+	TAR=$$(ls -1 $(BACKUP_DIR)/$$LAST_DIR/*_gitlab_backup.tar | head -n1); \
+	if [ -z "$$TAR" ]; then echo "No backups found"; exit 1; fi; \
+	make restore FILE="$$TAR"
+
