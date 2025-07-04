@@ -16,7 +16,7 @@ up-build:
 	@echo "▸ Building images…"
 	$(DC) --env-file .env up -d --build
 
-down
+down:
 	$(DC) down
 
 restart:
