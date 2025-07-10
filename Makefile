@@ -54,6 +54,22 @@ backup-now:      ## Full backup → $(BACKUP_DIR)/YYYY-MM-DD_HH-MM
 	$(DC) cp $(CT):/etc/gitlab/gitlab.rb           "$$DST/"; \
 	echo "✔ Backup saved → $$DST"
 
+
+# backup-now:
+# 	@set -eu; \
+# 	TS=$$(date +%F_%H-%M); \
+# 	DST="$(BACKUP_DIR)/$$TS"; \
+# 	echo "▸ Creating backup → $$TS"; \
+# 	mkdir -p "$$DST"; \
+# 	$(DC) exec -T $(CT) gitlab-backup create STRATEGY=copy; \
+# 	LATEST=$$($(DC) exec -T $(CT) \
+# 	           sh -c 'ls -1t /var/opt/gitlab/backups | head -n1' | tr -d '\r\n'); \
+# 	echo "▸ Copying files to host…"; \
+# 	$(DC) cp "$(CT):/var/opt/gitlab/backups/$$LATEST" "$$DST/"; \
+# 	$(DC) cp "$(CT):/etc/gitlab/gitlab-secrets.json" "$$DST/"; \
+# 	$(DC) cp "$(CT):/etc/gitlab/gitlab.rb"           "$$DST/"; \
+# 	echo "✔ Backup saved → $$DST"
+
 list-backups:    ## Show local backups in $(BACKUP_DIR)
 	@ls -1t $(BACKUP_DIR) || echo "no backups"
 

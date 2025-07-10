@@ -91,6 +91,7 @@ services:
       volumes:
         - ./backups:/export
         - /var/run/docker.sock:/var/run/docker.sock:ro
+        # - gitlab-backups:/var/opt/gitlab/backup
       networks:
         - backend
 
